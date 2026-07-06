@@ -275,13 +275,27 @@ function moodColor(v){
   return `rgb(${r},${g},${b})`;
 }
 
-const hasCloudStorage = (typeof window.storage !== 'undefined' && window.storage !== null);
+function cloudAvailable(){
+  return (typeof window.storage !== 'undefined' && window.storage !== null
+    && typeof window.storage.get === 'function');
+}
+
+// window.storage can be injected slightly after the page loads (especially
+// in the mobile app webview). Poll briefly on startup so we don't wrongly
+// fall back to localStorage, which does not reliably persist here.
+async function waitForCloudStorage(timeoutMs=2000){
+  const start = Date.now();
+  while(!cloudAvailable() && Date.now()-start < timeoutMs){
+    await new Promise(r=>setTimeout(r, 100));
+  }
+  return cloudAvailable();
+}
 
 async function loadEntries(){
   // Try the in-app persistent storage first, then fall back to this browser's
   // localStorage so the app still saves when opened as a plain local file.
   try{
-    if(hasCloudStorage){
+    if(cloudAvailable()){
       const res = await window.storage.get(STORAGE_KEY, false);
       entries = res ? JSON.parse(res.value) : {};
       return;
@@ -297,18 +311,18 @@ async function loadEntries(){
 
 async function persistEntries(){
   let ok = false;
-  if(hasCloudStorage){
+  if(cloudAvailable()){
     try{
       const res = await window.storage.set(STORAGE_KEY, JSON.stringify(entries), false);
       ok = !!res;
     }catch(e){ ok = false; }
   }
-  // Always mirror to localStorage as a safety net (also the primary path
-  // when hasCloudStorage is false).
+  // Mirror to localStorage as a bonus, but never let its failure (or its
+  // non-persistence in a sandboxed context) mask a successful cloud save.
   try{
     localStorage.setItem(STORAGE_KEY, JSON.stringify(entries));
-    ok = true;
-  }catch(e){ /* localStorage unavailable (e.g. private mode) */ }
+    if(!cloudAvailable()) ok = true;
+  }catch(e){ /* localStorage unavailable (e.g. private mode / sandboxed) */ }
   return ok;
 }
 
@@ -550,11 +564,16 @@ document.getElementById('importFile').addEventListener('change', async (e)=>{
 window.addEventListener('resize', ()=>{ if(loaded) renderGraph(); });
 
 async function init(){
+  await waitForCloudStorage();
   await loadEntries();
   loaded = true;
   renderCalendar();
   renderEntryPanel();
   renderGraph();
+  if(!cloudAvailable()){
+    document.getElementById('backupNote').textContent =
+      'この環境では自動保存が不安定な可能性があります。こまめに「ファイルに保存」でバックアップしてください';
+  }
 }
 init();
 </script>
