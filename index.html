@@ -221,6 +221,17 @@
   </div>
 
   <div class="panel">
+    <h2>バックアップ</h2>
+    <div class="sub" style="margin-bottom:10px;">記録はこの端末に自動保存されますが、機種変更やブラウザの初期化に備えてファイルにも保存できます</div>
+    <div class="row-btn">
+      <button class="save" id="exportBtn">ファイルに保存</button>
+      <button class="clear" id="importBtn">ファイルから読み込む</button>
+    </div>
+    <input type="file" id="importFile" accept="application/json" style="display:none;">
+    <div class="save-note" id="backupNote"></div>
+  </div>
+
+  <div class="panel">
     <h2>気分の推移</h2>
     <div class="range-toggle">
       <button data-range="30" class="active">30日</button>
@@ -264,23 +275,66 @@ function moodColor(v){
   return `rgb(${r},${g},${b})`;
 }
 
+const hasCloudStorage = (typeof window.storage !== 'undefined' && window.storage !== null);
+
 async function loadEntries(){
+  // Try the in-app persistent storage first, then fall back to this browser's
+  // localStorage so the app still saves when opened as a plain local file.
   try{
-    const res = await window.storage.get(STORAGE_KEY, false);
-    entries = res ? JSON.parse(res.value) : {};
+    if(hasCloudStorage){
+      const res = await window.storage.get(STORAGE_KEY, false);
+      entries = res ? JSON.parse(res.value) : {};
+      return;
+    }
+  }catch(e){ /* key may not exist yet, fall through */ }
+  try{
+    const raw = localStorage.getItem(STORAGE_KEY);
+    entries = raw ? JSON.parse(raw) : {};
   }catch(e){
     entries = {};
   }
-  loaded = true;
 }
 
 async function persistEntries(){
-  try{
-    const res = await window.storage.set(STORAGE_KEY, JSON.stringify(entries), false);
-    return !!res;
-  }catch(e){
-    return false;
+  let ok = false;
+  if(hasCloudStorage){
+    try{
+      const res = await window.storage.set(STORAGE_KEY, JSON.stringify(entries), false);
+      ok = !!res;
+    }catch(e){ ok = false; }
   }
+  // Always mirror to localStorage as a safety net (also the primary path
+  // when hasCloudStorage is false).
+  try{
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(entries));
+    ok = true;
+  }catch(e){ /* localStorage unavailable (e.g. private mode) */ }
+  return ok;
+}
+
+function downloadBackup(){
+  const blob = new Blob([JSON.stringify(entries, null, 2)], {type:'application/json'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  const stamp = fmtDate(new Date());
+  a.href = url;
+  a.download = `mood-backup-${stamp}.json`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+function readBackupFile(file){
+  return new Promise((resolve, reject)=>{
+    const reader = new FileReader();
+    reader.onload = ()=>{
+      try{ resolve(JSON.parse(reader.result)); }
+      catch(e){ reject(e); }
+    };
+    reader.onerror = ()=>reject(reader.error);
+    reader.readAsText(file);
+  });
 }
 
 function renderCalendar(){
@@ -465,10 +519,39 @@ function renderGraph(){
   ctx.textAlign='left';
 }
 
+document.getElementById('exportBtn').addEventListener('click', ()=>{
+  downloadBackup();
+  document.getElementById('backupNote').textContent = 'バックアップファイルを保存しました';
+});
+
+document.getElementById('importBtn').addEventListener('click', ()=>{
+  document.getElementById('importFile').click();
+});
+
+document.getElementById('importFile').addEventListener('change', async (e)=>{
+  const file = e.target.files[0];
+  const note = document.getElementById('backupNote');
+  if(!file) return;
+  try{
+    const data = await readBackupFile(file);
+    if(typeof data !== 'object' || data === null) throw new Error('invalid');
+    entries = data;
+    await persistEntries();
+    renderCalendar();
+    renderEntryPanel();
+    renderGraph();
+    note.textContent = '読み込みました';
+  }catch(err){
+    note.textContent = '読み込みに失敗しました。ファイルの形式を確認してください';
+  }
+  e.target.value = '';
+});
+
 window.addEventListener('resize', ()=>{ if(loaded) renderGraph(); });
 
 async function init(){
   await loadEntries();
+  loaded = true;
   renderCalendar();
   renderEntryPanel();
   renderGraph();
